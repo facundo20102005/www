@@ -226,19 +226,139 @@ document.addEventListener('visibilitychange', () => {
 // =============================================================================
 // 🔥 1. INICIALIZACIÓN AL CARGAR LA APP 🔥
 // =============================================================================
+// ── Auth helpers Informes ─────────────────────────────────
+function _mostrarModalPassInf() {
+    const modal = document.getElementById('modalPassword');
+    if (!modal) return;
+    modal.style.display = 'flex';
+    requestAnimationFrame(() => requestAnimationFrame(() => modal.classList.add('mostrar')));
+    setTimeout(() => document.getElementById('input-pass')?.focus(), 300);
+}
+function _ocultarModalPassInf() {
+    const modal = document.getElementById('modalPassword');
+    if (!modal) return;
+    modal.classList.remove('mostrar');
+    setTimeout(() => { modal.style.display = 'none'; }, 250);
+}
+
+async function verificarAccesoInformes() {
+    const pass      = (document.getElementById('input-pass')?.value || '').trim();
+    const btnIng    = document.getElementById('btn-ingresar-inf');
+    const loadingEl = document.getElementById('pass-loading');
+    const errorEl   = document.getElementById('pass-error');
+    const okEl      = document.getElementById('pass-ok');
+    const inputEl   = document.getElementById('input-pass');
+
+    if (!pass) { inputEl.style.borderColor = '#d93025'; return; }
+
+    // Reset estados
+    errorEl.style.display  = 'none';
+    okEl.style.display     = 'none';
+    loadingEl.style.display = 'flex';
+    if (btnIng) { btnIng.disabled = true; btnIng.style.opacity = '0.6'; }
+
+    try {
+        const res = await llamarAPI({ accion: "verificarPassword", payload: { pass, destino: "jefatura" } });
+
+        if (res && res.ok) {
+            // ✅ Correcto
+            loadingEl.style.display = 'none';
+            okEl.style.display      = 'block';
+            inputEl.style.borderColor = '#0f9d58';
+            if (res.isJefe) localStorage.setItem('auth_jefatura', 'true');
+            localStorage.setItem('auth_informes', 'true');
+
+            setTimeout(() => {
+                _ocultarModalPassInf();
+                cargarAppInformes();
+            }, 900);
+        } else {
+            // ❌ Incorrecto
+            loadingEl.style.display = 'none';
+            errorEl.style.display   = 'block';
+            inputEl.style.borderColor = '#d93025';
+            // Animación shake en el input
+            inputEl.style.animation = 'none';
+            requestAnimationFrame(() => { inputEl.style.animation = 'shake 0.4s ease'; });
+            inputEl.value = '';
+            setTimeout(() => { inputEl.style.borderColor = '#dadce0'; inputEl.focus(); }, 1000);
+            if (btnIng) { btnIng.disabled = false; btnIng.style.opacity = '1'; }
+        }
+    } catch(e) {
+        loadingEl.style.display  = 'none';
+        errorEl.innerText        = '❌ Error de conexión. Revisá tu internet.';
+        errorEl.style.display    = 'block';
+        if (btnIng) { btnIng.disabled = false; btnIng.style.opacity = '1'; }
+    }
+}
+
+// ── Carga principal de la app (solo se ejecuta post-auth) ──
+async function cargarAppInformes() {
+    obtenerDolar();
+
+    // Intentar cargar abonos base (no crítico si falla)
+    try {
+        listaAbonosBase = await llamarAPI({ accion: "obtenerAbonosBD" });
+        let cuitDic = JSON.parse(localStorage.getItem('cuitGlobalDic')) || {};
+        listaAbonosBase.forEach(abono => {
+            let cuitLimpio = String(abono.cuit).replace(/\D/g, "");
+            if (cuitLimpio && abono.gym) cuitDic[cuitLimpio] = abono.gym;
+            if (!globalGymsOfertas.includes(abono.gym)) globalGymsOfertas.push(abono.gym);
+            if (!globalGymsPresupuestos.includes(abono.gym)) globalGymsPresupuestos.push(abono.gym);
+        });
+        localStorage.setItem('cuitGlobalDic', JSON.stringify(cuitDic));
+    } catch(e) {
+        // Mostrar banner de error de conexión (no bloquear la app)
+        console.warn("Error cargando abonos base:", e.message);
+        mostrarBannerConexion(e.message);
+    }
+
+    const hoy = new Date();
+    const mm  = String(hoy.getMonth() + 1).padStart(2, '0');
+    const yyyy = String(hoy.getFullYear());
+    if (document.getElementById('sel-mes-abono'))      document.getElementById('sel-mes-abono').value = mm;
+    if (document.getElementById('sel-anio-abono'))     document.getElementById('sel-anio-abono').value = yyyy;
+    if (document.getElementById('selector-mes-abono')) document.getElementById('selector-mes-abono').value = `${yyyy}-${mm}`;
+
+    await cargarDatosBase().catch(e => {
+        console.warn("Error en cargarDatosBase:", e.message);
+    });
+}
+
+// ── Banner de error de conexión visible al usuario ──
+function mostrarBannerConexion(detalle) {
+    const existente = document.getElementById('banner-conexion');
+    if (existente) return; // No duplicar
+    const banner = document.createElement('div');
+    banner.id = 'banner-conexion';
+    banner.style.cssText = `
+        position: fixed; top: 64px; left: 0; right: 0; z-index: 9998;
+        background: #d93025; color: white; text-align: center;
+        padding: 10px 16px; font-size: 13px; font-weight: 700;
+        display: flex; align-items: center; justify-content: center; gap: 12px;
+        box-shadow: 0 3px 12px rgba(217,48,37,0.4);`;
+    banner.innerHTML = `
+        <span>🔌 Sin conexión al servidor de Google — Verificá que el script esté bien desplegado</span>
+        <button onclick="location.reload()" style="background:white; color:#d93025; border:none;
+            padding:5px 12px; border-radius:8px; font-weight:900; cursor:pointer; font-size:12px;">
+            🔄 Reintentar
+        </button>
+        <button onclick="document.getElementById('banner-conexion').remove()"
+            style="background:rgba(255,255,255,0.2); color:white; border:none;
+            padding:5px 10px; border-radius:8px; cursor:pointer; font-size:14px;">✕</button>`;
+    document.body.appendChild(banner);
+}
+
 window.addEventListener('load', async () => {
-    
-    // 🔥 Inicializar menú compartido (nav.js) 🔥
+
+    // NavBar (sin auth — se inicializa siempre para mostrar el menú)
     if (typeof NavBar !== 'undefined') {
         NavBar.init({ paginaActual: 'informes', mostrarBottomNav: false });
     } else {
-        // Fallback si nav.js no está disponible
-        if (localStorage.getItem('darkMode') === 'yes') {
-            document.body.classList.add('dark-mode');
-        }
+        if (localStorage.getItem('darkMode') === 'yes') document.body.classList.add('dark-mode');
     }
 
-    // 🔥 Mostrar valor del caché mientras llega el real 🔥
+    // Mostrar caché del dólar mientras esperamos
     const cachedDolar = (() => {
         try { return JSON.parse(localStorage.getItem('dolar_oficial_cache')); }
         catch(e) { return null; }
@@ -248,34 +368,17 @@ window.addEventListener('load', async () => {
         actualizarDisplayDolar(true, 'caché');
     }
 
-    // Obtener el dólar real (no bloquea el resto de la carga)
-    obtenerDolar(); // sin await — carga en paralelo
+    // ── Verificar acceso ──────────────────────────────────────
+    const tieneAcceso = localStorage.getItem('auth_informes')  === 'true' ||
+                        localStorage.getItem('auth_jefatura')  === 'true';
 
-    try {
-        listaAbonosBase = await llamarAPI({ accion: "obtenerAbonosBD" });
-        let cuitDic = JSON.parse(localStorage.getItem('cuitGlobalDic')) || {};
-        
-        listaAbonosBase.forEach(abono => {
-            let cuitLimpio = String(abono.cuit).replace(/\D/g, ""); 
-            if (cuitLimpio && abono.gym) cuitDic[cuitLimpio] = abono.gym; 
-            if (!globalGymsOfertas.includes(abono.gym)) globalGymsOfertas.push(abono.gym);
-            if (!globalGymsPresupuestos.includes(abono.gym)) globalGymsPresupuestos.push(abono.gym);
-        });
-        localStorage.setItem('cuitGlobalDic', JSON.stringify(cuitDic));
-        
-    } catch(e) { console.log("Error cargando abonos base", e); }
-
-    // Inicializamos los nuevos botones de fecha
-    const hoy = new Date();
-    const mm = String(hoy.getMonth() + 1).padStart(2, '0');
-    const yyyy = String(hoy.getFullYear());
-    if(document.getElementById('sel-mes-abono')) document.getElementById('sel-mes-abono').value = mm;
-    if(document.getElementById('sel-anio-abono')) document.getElementById('sel-anio-abono').value = yyyy;
-    if(document.getElementById('selector-mes-abono')) document.getElementById('selector-mes-abono').value = `${yyyy}-${mm}`;
-
-    await cargarDatosBase();
+    if (tieneAcceso) {
+        _ocultarModalPassInf();
+        cargarAppInformes();
+    } else {
+        _mostrarModalPassInf();
+    }
 });
-
 // 🔥 FUNCIÓN QUE CONECTA LOS NUEVOS BOTONES CON EL SISTEMA VIEJO 🔥
 function cambioMesPersonalizado() {
     let m = document.getElementById('sel-mes-abono').value;
@@ -290,12 +393,24 @@ function cambioMesPersonalizado() {
 async function llamarAPI(accionObj) {
     try {
         const response = await fetch(API_URL, {
-            method: "POST", headers: { "Content-Type": "text/plain;charset=utf-8" }, body: JSON.stringify(accionObj), redirect: "follow"
+            method: "POST",
+            headers: { "Content-Type": "text/plain;charset=utf-8" },
+            body: JSON.stringify(accionObj),
+            redirect: "follow"
         });
+        if (!response.ok) {
+            throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+        }
         const result = await response.json();
         if (result.status === "success") return result.data;
-        else throw new Error(result.message);
-    } catch (error) { throw error; }
+        else throw new Error(result.message || "El script devolvió un error sin mensaje.");
+    } catch (error) {
+        // Mejorar el mensaje de error para que sea más diagnóstico
+        if (error.message.includes("Failed to fetch") || error.message.includes("NetworkError")) {
+            throw new Error("Sin conexión al servidor. Verificá:\n1) Que el script esté desplegado como 'Cualquier persona'\n2) Que la URL en API_URL use /exec (no /dev)\n3) Tu conexión a internet.");
+        }
+        throw error;
+    }
 }
 
 // 🔥 BURBUJA DE LISTA DE PRECIOS 🔥
@@ -322,43 +437,45 @@ function toggleBurbujaPrecios() {
 function renderizarBurbujaPrecios() {
     const contenedor = document.getElementById('burbuja-precios-contenido');
     const labelDolar = document.getElementById('burbuja-dolar-label');
+    const tituloBurbuja = document.getElementById('burbuja-titulo');
     if (!contenedor) return;
 
-    const tasaDolar = valorDolarOficial; // Ya está garantizado ser el valor real
+    const tasaDolar = valorDolarOficial;
     if (labelDolar) {
-        labelDolar.innerText = `💱 USD Oficial: $${tasaDolar.toLocaleString('es-AR', { maximumFractionDigits: 2 })}`;
+        labelDolar.innerText = modoApp === 'presupuestos'
+            ? `💱 USD Oficial: $${tasaDolar.toLocaleString('es-AR', { maximumFractionDigits: 2 })}`
+            : '';
+    }
+    if (tituloBurbuja) {
+        tituloBurbuja.innerText = modoApp === 'ofertas' ? '🛠️ Precios de Mantenimiento' : '📋 Lista de Precios';
     }
 
     const precios = modoApp === 'presupuestos' ? PRECIOS_PRESUPUESTOS : PRECIOS_OFERTAS;
 
     let html = '';
-    let alternado = false;
     Object.entries(precios).forEach(([nombre, info]) => {
         const esUSD = info.moneda === 'USD';
         const precioARS = esUSD ? Math.round(info.precio * tasaDolar) : info.precio;
         const precioConIVA = Math.round(precioARS * 1.21);
-        const fondo = alternado ? 'rgba(26,115,232,0.04)' : 'white';
+
+        const badgeUSD = esUSD
+            ? `<span class="precio-badge-usd">U$D ${info.precio}</span>`
+            : `<span style="font-size:11px; color:var(--inf-muted);">ARS</span>`;
 
         html += `
-        <div style="display:grid; grid-template-columns:1fr auto auto auto; align-items:center; 
-                    gap:8px; padding:10px 16px; background:${fondo}; border-bottom:1px solid #f1f3f4;">
-            <div style="font-size:13px; font-weight:600; color:#3c4043; line-height:1.3;">${nombre}</div>
-            ${esUSD 
-                ? `<div style="font-size:11px; font-weight:bold; color:#7b1fa2; background:#f3e5f5; padding:2px 7px; border-radius:12px; white-space:nowrap;">U$D ${info.precio}</div>` 
-                : `<div style="font-size:11px; color:#5f6368; padding:2px 7px;">ARS</div>`}
-            <div style="font-size:13px; font-weight:700; color:#1a73e8; white-space:nowrap; text-align:right;">
-                $${precioARS.toLocaleString('es-AR')}
-            </div>
-            <div style="font-size:11px; color:#5f6368; white-space:nowrap; text-align:right;" title="Con IVA 21%">
-                +IVA: $${precioConIVA.toLocaleString('es-AR')}
-            </div>
+        <div class="precio-row">
+            <span class="precio-nombre">${nombre}</span>
+            ${badgeUSD}
+            <span class="precio-valor">$${precioARS.toLocaleString('es-AR')}</span>
+            ${modoApp === 'presupuestos' ? `<span class="precio-iva">+IVA: $${precioConIVA.toLocaleString('es-AR')}</span>` : ''}
         </div>`;
-        alternado = !alternado;
     });
 
-    html += `<div style="padding:10px 16px; background:#f8f9fa; font-size:11px; color:#5f6368; text-align:center; font-style:italic;">
-        Los precios en USD se calculan al tipo de cambio oficial del día.
-    </div>`;
+    if (modoApp === 'presupuestos') {
+        html += `<div style="padding:10px 16px; font-size:11px; color:var(--inf-muted); text-align:center; font-style:italic; border-top:1px solid var(--inf-border);">
+            Los precios en USD se calculan al tipo de cambio oficial del día.
+        </div>`;
+    }
 
     contenedor.innerHTML = html;
 }
@@ -469,119 +586,140 @@ function formatearFechaManual(e) {
     }
 }
 
-// 🔥 1. ACTUALIZADO: Ocultar barras innecesarias en Abonos 🔥
 function setModoApp(modo) {
     modoApp = modo;
     
     const msjInicial = document.getElementById('mensaje-inicial');
     if(msjInicial) msjInicial.style.display = 'none';
-    
     const areaTrabajo = document.getElementById('area-trabajo');
     if(areaTrabajo) areaTrabajo.style.display = 'block';
 
-    document.getElementById('btn-modo-ofertas').style.background = modo === 'ofertas' ? '#1a73e8' : 'transparent';
-    document.getElementById('btn-modo-ofertas').style.color = modo === 'ofertas' ? 'white' : '#5f6368';
-    document.getElementById('btn-modo-ofertas').style.border = modo === 'ofertas' ? 'none' : '1.5px solid #dadce0';
-    
-    document.getElementById('btn-modo-presupuestos').style.background = modo === 'presupuestos' ? '#1a73e8' : 'transparent';
-    document.getElementById('btn-modo-presupuestos').style.color = modo === 'presupuestos' ? 'white' : '#5f6368';
-    document.getElementById('btn-modo-presupuestos').style.border = modo === 'presupuestos' ? 'none' : '1.5px solid #dadce0';
+    // Actualizar tabs con nueva clase
+    ['ofertas','presupuestos','abonos'].forEach(m => {
+        const btn = document.getElementById('btn-modo-' + m);
+        if (!btn) return;
+        btn.classList.toggle('activo', m === modo);
+    });
 
-    const btnAbonos = document.getElementById('btn-modo-abonos');
-    if(btnAbonos) {
-        btnAbonos.style.background = modo === 'abonos' ? '#1a73e8' : 'transparent';
-        btnAbonos.style.color = modo === 'abonos' ? 'white' : '#5f6368';
-        btnAbonos.style.border = modo === 'abonos' ? 'none' : '1.5px solid #dadce0';
-    }
-
-    // 🔥 Mostrar indicador del dólar SIEMPRE en modo presupuestos 🔥
-    const domDolar = document.getElementById('valor-dolar');
-    if (domDolar) {
-        domDolar.style.display = modo === 'presupuestos' ? 'inline-block' : 'none';
-    }
-
-    // 🔥 Mostrar botón de lista de precios solo en modo presupuestos 🔥
-    const btnPrecios = document.getElementById('btn-ver-precios');
-    if (btnPrecios) {
-        btnPrecios.style.display = modo === 'presupuestos' ? 'inline-block' : 'none';
-        // Cerrar burbuja al cambiar de modo
-        const burbuja = document.getElementById('burbuja-precios');
-        if (burbuja) burbuja.style.display = 'none';
-        btnPrecios.innerText = '📋 Ver Lista de Precios';
-        btnPrecios.style.background = '#e8f0fe';
-        btnPrecios.style.color = '#1a73e8';
-    }
-
-    // Ocultar los botones grises si estamos en Abonos
-    const contenedorTabsGrises = document.getElementById('tab-crear').parentElement;
-    if (contenedorTabsGrises) {
-        contenedorTabsGrises.style.display = modo === 'abonos' ? 'none' : 'flex';
-    }
+    // Abonos: mostrar/ocultar sección
+    const secAbonos = document.getElementById('seccion-abonos');
+    if (secAbonos) secAbonos.style.display = modo === 'abonos' ? 'block' : 'none';
+    if (areaTrabajo) areaTrabajo.style.display = modo === 'abonos' ? 'none' : 'block';
+    if (msjInicial)  msjInicial.style.display  = modo === 'abonos' ? 'none' : 'none';
 
     if (modo === 'abonos') {
-        document.getElementById('seccion-crear').style.display = 'none';
-        document.getElementById('seccion-creados').style.display = 'none';
-        
-        const arcaCont = document.getElementById('arca-container');
-        if(arcaCont) arcaCont.style.display = 'none';
-        
-        document.getElementById('seccion-abonos').style.display = 'block';
-        renderizarAbonos(); 
-        
+        const hoy = new Date();
+        const mm  = String(hoy.getMonth() + 1).padStart(2,'0');
+        const yyyy = String(hoy.getFullYear());
+        const sel = document.getElementById('selector-mes-abono');
+        if (sel && !sel.value) sel.value = `${yyyy}-${mm}`;
+        cargarAbonos();
+        return;
+    }
+
+    // Dólar: solo en presupuestos (los precios de ofertas son en ARS fijos)
+    const domDolar = document.getElementById('valor-dolar');
+    if (domDolar) domDolar.style.display = modo === 'presupuestos' ? 'inline-block' : 'none';
+
+    // Botón lista precios: SIEMPRE visible (tanto en ofertas como presupuestos)
+    const btnPrecios = document.getElementById('btn-ver-precios');
+    if (btnPrecios) {
+        btnPrecios.style.display = 'inline-block';
+        const burbuja = document.getElementById('burbuja-precios');
+        if (burbuja) burbuja.style.display = 'none';
+        btnPrecios.innerText = modo === 'ofertas' ? '📋 Precios Mantenimiento' : '📋 Lista de Precios';
+        btnPrecios.style.background = modo === 'ofertas' ? '#e6f4ea' : '#e8f0fe';
+        btnPrecios.style.color      = modo === 'ofertas' ? '#0f9d58' : '#1a73e8';
+    }
+
+    // ARCA solo en presupuestos
+    const arcaC = document.getElementById('arca-container');
+    if (arcaC) arcaC.style.display = modo === 'presupuestos' ? 'block' : 'none';
+
+    // Título y descripción de la sección guardados
+    const tit = document.getElementById('titulo-guardados');
+    const desc = document.getElementById('desc-guardados');
+    const titForm = document.getElementById('titulo-form');
+    if (modo === 'ofertas') {
+        if (tit) tit.innerText = '📁 Ofertas Guardadas';
+        if (desc) desc.innerText = 'Lista de ofertas de mantenimiento.';
+        if (titForm) titForm.innerText = '🛠️ Nueva Oferta';
     } else {
-        document.getElementById('seccion-abonos').style.display = 'none';
-        
-        document.getElementById('seccion-crear').style.display = (document.getElementById('tab-crear').style.background === 'rgb(26, 115, 232)') ? 'block' : 'none';
-        document.getElementById('seccion-creados').style.display = (document.getElementById('tab-creados').style.background === 'rgb(26, 115, 232)') ? 'block' : 'none';
-        
-        const arcaCont = document.getElementById('arca-container');
-        if (arcaCont) {
-            arcaCont.style.display = (modo === 'presupuestos' && document.getElementById('tab-creados').style.background === 'rgb(26, 115, 232)') ? 'block' : 'none';
-        }
+        if (tit) tit.innerText = '📁 Presupuestos Guardados';
+        if (desc) desc.innerText = 'Facturas y presupuestos en la nube.';
+        if (titForm) titForm.innerText = '💰 Nuevo Presupuesto';
+    }
 
-        const tituloForm = document.getElementById('titulo-form');
-        if(tituloForm) tituloForm.innerText = modo === 'ofertas' ? "📄 Nueva Oferta" : "📄 Nuevo Presupuesto";
+    // Mostrar/ocultar campos según modo
+    const contFecha = document.getElementById('container-fecha');
+    const contFrec  = document.getElementById('container-frecuencia');
+    if (contFecha) contFecha.style.display = modo === 'presupuestos' ? 'block' : 'none';
+    if (contFrec)  contFrec.style.display  = modo === 'presupuestos' ? 'none'  : 'block';
+    const labelGym = document.getElementById('label-gym');
+    if (labelGym) labelGym.innerText = modo === 'presupuestos' ? 'Gimnasio / Cliente *' : 'Gimnasio *';
 
-        const contFrec = document.getElementById('container-frecuencia');
-        if(contFrec) contFrec.style.display = modo === 'ofertas' ? 'block' : 'none';
-        
-        const contFecha = document.getElementById('container-fecha');
-        if(contFecha) contFecha.style.display = modo === 'presupuestos' ? 'block' : 'none';
-
-        const seccionCreados = document.getElementById('seccion-creados');
-        if (seccionCreados && seccionCreados.style.display !== 'none') {
-            obtenerYRenderizarCreados();
-        } else {
-            const gymInput = document.getElementById('input-gym');
-            if (gymInput) gymInput.value = '';
-            const listaD = document.getElementById('lista-maquinas-dom');
-            if(listaD) listaD.innerHTML = '';
-            
-            agregarItem();
-            calcularTotal();
+    // ── Auto-rellenar fecha con HOY si el campo está vacío ──────
+    if (modo === 'presupuestos') {
+        const inputFecha = document.getElementById('input-fecha-presup');
+        if (inputFecha && !inputFecha.value.trim()) {
+            const hoy = new Date();
+            inputFecha.value = String(hoy.getDate()).padStart(2,'0') + '/' +
+                               String(hoy.getMonth()+1).padStart(2,'0') + '/' +
+                               hoy.getFullYear();
         }
     }
+
+    switchTab('crear');
+    // Limpiar form inline (limpiarFormulario no existe como función separada)
+    const gymIn = document.getElementById('input-gym');
+    if (gymIn) gymIn.value = '';
+    const cuitIn = document.getElementById('input-cuit');
+    if (cuitIn) cuitIn.value = '';
+    const listaMaq = document.getElementById('lista-maquinas-dom');
+    if (listaMaq) listaMaq.innerHTML = '';
+    const burbs = document.getElementById('contenedor-burbujas-fecha');
+    if (burbs) burbs.innerHTML = '';
+    const detBurb = document.getElementById('detalle-motivo-burbuja');
+    if (detBurb) detBurb.style.display = 'none';
+    idEditando = null;
+    agregarItem();
 }
 
 function switchTab(tab) {
     tabActivo = tab;
-    if(tab === 'crear') {
-        document.getElementById('seccion-crear').style.display = 'block';
-        document.getElementById('seccion-creados').style.display = 'none';
-        document.getElementById('tab-crear').style.background = '#1a73e8';
-        document.getElementById('tab-creados').style.background = '#5f6368';
-        const arcaCont = document.getElementById('arca-container');
-        if(arcaCont) arcaCont.style.display = 'none';
+    const crear   = document.getElementById('seccion-crear');
+    const creados = document.getElementById('seccion-creados');
+    const arcaCont = document.getElementById('arca-container');
+    const tabC = document.getElementById('tab-crear');
+    const tabG = document.getElementById('tab-creados');
+
+    if (tab === 'crear') {
+        if (crear)   crear.style.display   = 'block';
+        if (creados) creados.style.display  = 'none';
+        if (tabC) { tabC.classList.add('activo'); }
+        if (tabG) { tabG.classList.remove('activo'); }
+        if (arcaCont) arcaCont.style.display = 'none';
+
+        // Auto-rellenar fecha si es presupuesto y el campo está vacío
+        if (modoApp === 'presupuestos') {
+            const inp = document.getElementById('input-fecha-presup');
+            if (inp && !inp.value.trim()) {
+                const hoy = new Date();
+                inp.value = String(hoy.getDate()).padStart(2,'0') + '/' +
+                            String(hoy.getMonth()+1).padStart(2,'0') + '/' +
+                            hoy.getFullYear();
+            }
+        }
     } else {
-        document.getElementById('seccion-crear').style.display = 'none';
-        document.getElementById('seccion-creados').style.display = 'block';
-        document.getElementById('tab-crear').style.background = '#5f6368';
-        document.getElementById('tab-creados').style.background = '#1a73e8';
-        const arcaCont = document.getElementById('arca-container');
-        if(arcaCont) arcaCont.style.display = modoApp === 'presupuestos' ? 'block' : 'none';
-        obtenerYRenderizarCreados(); 
+        if (crear)   crear.style.display   = 'none';
+        if (creados) creados.style.display  = 'block';
+        if (tabC) { tabC.classList.remove('activo'); }
+        if (tabG) { tabG.classList.add('activo'); }
+        if (arcaCont) arcaCont.style.display = modoApp === 'presupuestos' ? 'block' : 'none';
+        obtenerYRenderizarCreados();
     }
 }
+
 
 // Recibe metros y terminales para el armado del HTML
 function agregarItem(tipoBase = "", desc = "", cant = 1, precioForzado = null, metros = 1, terminales = 2) {
@@ -600,7 +738,7 @@ function agregarItem(tipoBase = "", desc = "", cant = 1, precioForzado = null, m
     div.style.cssText = "background: white; padding: 15px; margin-bottom: 15px; border-radius: 8px; border-left: 4px solid #1a73e8; box-shadow: 0 1px 4px rgba(0,0,0,0.08);";
     div.id = `maq-${idUnico}`;
     
-    let gridColumnas = '1fr 1fr';
+    let gridColumnas = modoApp === 'presupuestos' ? '1fr 1fr 1fr 1.2fr' : '1fr 1fr';
 
     div.innerHTML = `
         <div style="display:flex; justify-content:space-between; margin-bottom:10px;">
@@ -932,9 +1070,23 @@ async function guardarDocumento() {
         
         agregarItem();
         mostrarMensaje('✅ Guardado exitosamente.', 'exito');
+
+        // Usar el id que ya tenemos en el payload (el backend devuelve string, no objeto con id)
+        const nuevoId = payloadDoc.datos.id;
+        const accesoPDF = document.getElementById('acceso-rapido-pdf');
+        const btnPDF    = document.getElementById('btn-rapido-pdf');
+        const btnMail   = document.getElementById('btn-rapido-mail');
+        if (accesoPDF && nuevoId) {
+            accesoPDF.style.display = 'block';
+            if (btnPDF)  btnPDF.onclick  = (e) => abrirVistaPresupuesto(nuevoId, e.currentTarget);
+            if (btnMail) btnMail.onclick = () => prepararMail(nuevoId);
+        }
         setTimeout(() => switchTab('creados'), 1500);
-    } catch (e) { mostrarMensaje('❌ Error de red.', 'error'); } 
-    finally { btn.disabled = false; }
+    } catch (e) {
+        const msg = e?.message || String(e) || 'Error desconocido';
+        console.error('guardarDocumento error:', e);
+        mostrarMensaje('❌ Error de conexión: ' + msg + '\n(Verificá tu internet y que el script de Google esté activo)', 'error');
+    } finally { btn.disabled = false; }
 }
 // Para que la lista se cierre si tocas en cualquier otra parte de la pantalla
 document.addEventListener('click', (e) => {
@@ -945,14 +1097,48 @@ document.addEventListener('click', (e) => {
 });
 async function obtenerYRenderizarCreados() {
     const contenedor = document.getElementById('contenedor-informes-creados');
-    contenedor.innerHTML = '<p style="text-align:center; color:#1a73e8; font-weight:bold;">Leyendo desde la nube... ⏳</p>';
+    if (!contenedor) return;
+
+    // Skeleton loader mientras carga
+    contenedor.innerHTML = `
+        <div style="text-align:center; padding:30px 20px; color:var(--inf-azul,#1a73e8);">
+            <div style="display:inline-block; width:24px; height:24px; border:3px solid #1a73e8;
+                 border-top-color:transparent; border-radius:50%; animation:spin 0.8s linear infinite; margin-bottom:10px;"></div>
+            <div style="font-weight:700; font-size:14px;">Leyendo desde la nube...</div>
+        </div>`;
+
     const hojaReq = modoApp === 'ofertas' ? HOJA_OFERTAS : HOJA_PRESUPUESTOS;
 
     try {
         documentosGuardados = await llamarAPI({ accion: "obtenerDocumentosBD", payload: { hoja: hojaReq } });
-        renderizarTarjetas(); // Llama al dibujador
-    } catch(e) { 
-        contenedor.innerHTML = '<p style="text-align:center; color:red;">❌ Error de conexión.</p>'; 
+        renderizarTarjetas();
+    } catch(e) {
+        const esRedeploy = e.message && (e.message.includes('Failed to fetch') || e.message.includes('NetworkError'));
+        const mensajeError = esRedeploy
+            ? 'Sin conexión con el servidor de Google. Verificá tu internet.'
+            : (e.message || 'Error desconocido');
+
+        contenedor.innerHTML = `
+            <div style="padding:24px 20px; text-align:center; background:var(--inf-rojo-lt,#fce8e6);
+                 border-radius:14px; border:1px solid rgba(217,48,37,0.3); margin-top:8px;">
+                <div style="font-size:28px; margin-bottom:10px;">🔌</div>
+                <div style="font-weight:900; font-size:15px; color:#d93025; margin-bottom:6px;">Error de conexión</div>
+                <div style="font-size:13px; color:#5f6368; margin-bottom:16px; font-family:monospace; background:rgba(0,0,0,0.05);
+                     padding:8px 12px; border-radius:8px; text-align:left; word-break:break-all;">
+                    ${mensajeError}
+                </div>
+                <div style="font-size:13px; color:#475467; margin-bottom:16px; text-align:left; line-height:1.7;">
+                    <b>Causas comunes:</b><br>
+                    1️⃣ El Apps Script no está desplegado como <b>"Acceso: Cualquier persona"</b><br>
+                    2️⃣ Agregaste funciones nuevas al Backend y no lo <b>volviste a desplegar</b><br>
+                    3️⃣ La URL del script en <code>API_URL</code> es incorrecta
+                </div>
+                <button onclick="obtenerYRenderizarCreados()"
+                        style="background:#1a73e8; color:white; border:none; padding:12px 24px;
+                               border-radius:10px; font-weight:900; font-size:14px; cursor:pointer;">
+                    🔄 Reintentar
+                </button>
+            </div>`;
     }
 }
 
@@ -1061,7 +1247,7 @@ function renderizarTarjetas() {
         return new Date(yb, mb-1, db) - new Date(ya, ma-1, da);
     });
 
-    // 5. DIBUJAR LA BOTONERA DE MESES (usando los chips del nuevo HTML)
+    // 5. CHIPS DE MES (meses-scroll con clase mes-chip)
     const mesesScrollEl = document.getElementById('meses-scroll');
     if (mesesScrollEl) {
         let chipsHTML = `<button class="mes-chip ${filtroMesActual==='Todos'?'activo':''}" onclick="setFiltroMes('Todos')">Ver todos</button>`;
@@ -1071,116 +1257,126 @@ function renderizarTarjetas() {
         mesesScrollEl.innerHTML = chipsHTML;
     }
 
-    // Mostrar/ocultar filtros de estado según el modo (Ofertas no tiene pagado/pendiente)
-    const divFiltrosEstado = document.getElementById('div-filtros-estado');
-    if (divFiltrosEstado) {
-        divFiltrosEstado.style.display = modoApp === 'ofertas' ? 'none' : 'flex';
-    }
-    // Si estamos en Ofertas, forzar filtro "Todos" para mostrar todos los docs
-    if (modoApp === 'ofertas') {
-        filtroPagoActual = 'Todos';
-    }
-
-    // Actualizar estilos de botones de estado
-    ['pendiente','pagado','todos'].forEach(k => {
+    // Botones filtro estado con colores
+    const filtroMap = { pendiente:'Pendiente', pagado:'Pagado', todos:'Todos' };
+    Object.entries(filtroMap).forEach(([k, v]) => {
         const btn = document.getElementById('filtro-' + k);
         if (!btn) return;
-        const isActive = (k === 'pendiente' && filtroPagoActual === 'Pendiente') ||
-                         (k === 'pagado'    && filtroPagoActual === 'Pagado') ||
-                         (k === 'todos'     && filtroPagoActual === 'Todos');
-        btn.style.background = isActive ? (k==='pendiente'?'#fce8e6':k==='pagado'?'#e6f4ea':'#e8f0fe') : '#f1f3f4';
-        btn.style.color      = isActive ? (k==='pendiente'?'#d93025':k==='pagado'?'#0f9d58':'#1a73e8') : '#5f6368';
+        const isActive = filtroPagoActual === v;
+        const colors = {
+            pendiente: { bg: isActive ? '#fce8e6' : '#f4f6f9', col: isActive ? '#d93025' : '#5f6368' },
+            pagado:    { bg: isActive ? '#e6f4ea' : '#f4f6f9', col: isActive ? '#0f9d58' : '#5f6368' },
+            todos:     { bg: isActive ? '#e8f0fe' : '#f4f6f9', col: isActive ? '#1a73e8' : '#5f6368' },
+        };
+        btn.style.background = colors[k].bg;
+        btn.style.color      = colors[k].col;
+        btn.style.boxShadow  = isActive ? '0 2px 8px rgba(0,0,0,0.12)' : 'none';
     });
 
-    // 6. DIBUJAR LAS TARJETAS DE LOS DOCUMENTOS
+    // 6. TARJETAS CON NUEVO DISEÑO
     if (finales.length === 0) {
-        contenedor.innerHTML += '<p style="text-align:center; color:#999; margin-top:30px;">No hay documentos en esta categoría.</p>';
+        contenedor.innerHTML = `<div style="text-align:center; padding:40px 20px; color:#9aa0a6;">
+            <div style="font-size:36px; margin-bottom:10px;">🗂️</div>
+            <div style="font-weight:700; font-size:15px;">No hay documentos en esta categoría</div>
+        </div>`;
         return;
     }
 
     finales.forEach((doc, animIdx) => {
-        const estadoReal  = doc.estado || "Pendiente";
-        const esPagado    = doc.pagado === "Pagado";
-        const colorEstado = estadoReal === "Facturado / Aprobado" ? "#34a853" : estadoReal === "Enviado" ? "#1a73e8" : "#fbbc04";
-        const colorPagado = esPagado ? "#0f9d58" : "#d93025";
-        const bgPagado    = esPagado ? "#e6f4ea" : "#fce8e6";
+        const estadoReal = doc.estado || "Pendiente";
+        const esPagado   = doc.pagado === "Pagado";
+        const colorEst   = estadoReal === "Facturado / Aprobado" ? "#34a853" : estadoReal === "Enviado" ? "#1a73e8" : "#fbbc04";
+        const colorPag   = esPagado ? "#0f9d58" : "#d93025";
+        const bgPag      = esPagado ? "#e6f4ea" : "#fce8e6";
 
-        // Badges
         const badgeCuit = doc.cuit
-            ? `<span style="background:#f1f3f4; color:#5f6368; padding:3px 8px; border-radius:6px; font-size:11px; border:1px solid #ddd; font-weight:700;">${doc.cuit}</span>`
-            : "";
+            ? `<span style="background:#f1f3f4; color:#5f6368; padding:2px 8px; border-radius:8px; font-size:11px; font-weight:700; border:1px solid #e0e0e0; margin-right:4px;">${doc.cuit}</span>`
+            : '';
+        let factStr = String(doc.numFactura || '');
+        let displayFact = factStr.startsWith("NC ") ? `🔄 NC ${factStr.replace("NC ","")}` : factStr.includes("-") ? `📄 Factura ${factStr}` : factStr ? `📄 ${factStr}` : '';
+        const badgeFact = displayFact ? `<span class="badge-fact">${displayFact}</span>` : '';
 
-        let factStr = String(doc.numFactura || "");
-        let displayFactura = factStr.startsWith("NC ") ? `📄 NC ${factStr.replace("NC ","")}` : factStr.includes("-") ? `📄 Factura ${factStr}` : factStr ? `📄 ${factStr}` : "";
-        const badgeFactura = displayFactura
-            ? `<span class="doc-badge-factura">${displayFactura}</span>`
-            : "";
-
-        let maquinasHTML = "";
+        let maquinasHTML = '';
         if (doc.items && Array.isArray(doc.items)) {
-            maquinasHTML = doc.items.map(m => {
-                let extra = (m.metros && m.terminales) ? `<br><span style="color:#0f9d58;font-size:11px;">(🔧 ${m.metros}mts / ${m.terminales} term.)</span>` : "";
-                return `<li style="margin-bottom:5px;"><b>${m.cant}x ${m.desc||'Sin Marca'}</b> — ${m.tipo} <span style="color:#d93025;font-size:11px;">($${m.precio?m.precio.toLocaleString('es-AR'):'0'} c/u)</span>${extra}</li>`;
-            }).join('');
+            maquinasHTML = `<ul style="margin:0 0 10px; padding-left:18px; font-size:13px; color:#475467; line-height:1.7;">` +
+                doc.items.map(m => {
+                    let extra = (m.metros && m.terminales) ? ` <span style="color:#0f9d58; font-size:11px;">(${m.metros}m / ${m.terminales} term.)</span>` : '';
+                    return `<li><b>${m.cant}x ${m.desc||'—'}</b> — ${m.tipo} <span style="color:#d93025; font-size:11px;">($${(m.precio||0).toLocaleString('es-AR')} c/u)</span>${extra}</li>`;
+                }).join('') + `</ul>`;
         }
 
-        const selectEstadoHTML = modoApp === 'presupuestos' ? `
-            <div>
-                <label style="font-size:11px;font-weight:800;color:#555;text-transform:uppercase;letter-spacing:0.4px;">Estado Operativo:</label>
-                <select onchange="cambiarEstado(${doc.id}, this.value, 'estado')"
-                        style="width:100%; padding:9px; border-radius:8px; border:1px solid ${colorEstado}; font-weight:700; color:${colorEstado}; outline:none; margin-top:4px;">
-                    <option value="Pendiente"           ${estadoReal==='Pendiente'?'selected':''}>Pendiente</option>
-                    <option value="Enviado"             ${estadoReal==='Enviado'?'selected':''}>Enviado al Cliente</option>
-                    <option value="Facturado / Aprobado" ${estadoReal==='Facturado / Aprobado'?'selected':''}>Facturado / Aprobado</option>
-                </select>
-            </div>
-            <div>
-                <label style="font-size:11px;font-weight:800;color:#555;text-transform:uppercase;letter-spacing:0.4px;">Estado de Pago:</label>
-                <select onchange="cambiarEstado(${doc.id}, this.value, 'pagado')"
-                        style="width:100%; padding:9px; border-radius:8px; border:1px solid ${colorPagado}; font-weight:700; color:${colorPagado}; background:${bgPagado}; outline:none; margin-top:4px;">
-                    <option value="Pendiente" ${doc.pagado==='Pendiente'?'selected':''}>Pendiente</option>
-                    <option value="Pagado"    ${doc.pagado==='Pagado'?'selected':''}>Pagado</option>
-                </select>
-            </div>
-        ` : '';
+        const selectsHTML = modoApp === 'presupuestos' ? `
+            <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:12px;">
+                <div>
+                    <div style="font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.4px; color:#5f6368; margin-bottom:4px;">Estado Operativo</div>
+                    <select onchange="cambiarEstado(${doc.id}, this.value, 'estado')"
+                            style="width:100%; padding:9px; border-radius:8px; border:1.5px solid ${colorEst}; font-weight:700; color:${colorEst}; outline:none; background:white;">
+                        <option value="Pendiente"            ${estadoReal==='Pendiente'?'selected':''}>Pendiente</option>
+                        <option value="Enviado"              ${estadoReal==='Enviado'?'selected':''}>Enviado</option>
+                        <option value="Facturado / Aprobado" ${estadoReal==='Facturado / Aprobado'?'selected':''}>Facturado / Aprobado</option>
+                    </select>
+                </div>
+                <div>
+                    <div style="font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.4px; color:#5f6368; margin-bottom:4px;">Estado de Pago</div>
+                    <select onchange="cambiarEstado(${doc.id}, this.value, 'pagado')"
+                            style="width:100%; padding:9px; border-radius:8px; border:1.5px solid ${colorPag}; font-weight:700; color:${colorPag}; background:${bgPag}; outline:none;">
+                        <option value="Pendiente" ${doc.pagado==='Pendiente'?'selected':''}>Pendiente</option>
+                        <option value="Pagado"    ${doc.pagado==='Pagado'?'selected':''}>Pagado</option>
+                    </select>
+                </div>
+            </div>` : '';
 
         const div = document.createElement('div');
-        div.className = `doc-card-v2 ${esPagado?'pagado':'pendiente'}`;
-        div.style.animationDelay = (animIdx * 0.04) + 's';
-        if (modoApp !== 'presupuestos') div.style.borderLeft = `4px solid ${colorEstado}`;
+        div.className = `doc-card-v3 ${esPagado?'pagado':'pendiente'}`;
+        div.style.animationDelay = (animIdx * 0.035) + 's';
 
         div.innerHTML = `
-            <div class="doc-header-v2" onclick="
+            <div class="doc-header-v3" onclick="
                 const body = this.nextElementSibling;
-                const open  = body.classList.toggle('abierto');
-                this.querySelector('.arrow-icon').innerText = open ? '▲' : '▼';
+                const open = body.classList.toggle('abierto');
+                this.querySelector('.arrow').innerText = open ? '▲' : '▼';
             ">
                 <div style="flex:1; min-width:0;">
-                    <div class="doc-gym-v2" style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
-                        ${doc.cliente}
+                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:3px;">
+                        <span class="doc-gym-v3">${doc.cliente}</span>
                         ${badgeCuit}
-                        ${badgeFactura}
+                        ${badgeFact}
                     </div>
-                    <div class="doc-meta-v2">${doc.fechaLimpia} &nbsp;|&nbsp; Total: <b style="color:#1a73e8;">$${Number(doc.total).toLocaleString('es-AR')}</b></div>
+                    <div class="doc-meta-v3">
+                        ${doc.fechaLimpia}
+                        &nbsp;·&nbsp;
+                        Total: <strong style="color:#1a73e8;">$${Number(doc.total).toLocaleString('es-AR')}</strong>
+                    </div>
                 </div>
                 <div style="display:flex; align-items:center; gap:8px; flex-shrink:0;">
-                    ${modoApp==='presupuestos' ? `<span class="doc-badge-estado ${esPagado?'pagado':'pendiente'}">${doc.pagado}</span>` : ''}
-                    <span class="arrow-icon" style="font-size:14px; color:#1a73e8;">▼</span>
+                    ${modoApp==='presupuestos' ? `<span class="badge-estado ${esPagado?'pagado':'pendiente'}">${doc.pagado}</span>` : ''}
+                    <span class="arrow" style="font-size:13px; color:#1a73e8; font-weight:800;">▼</span>
                 </div>
             </div>
-            <div class="doc-expand-v2">
-                ${maquinasHTML ? `<ul style="margin:0 0 14px; padding-left:20px; font-size:13px; color:#444; line-height:1.7;">${maquinasHTML}</ul>` : ''}
-                <div style="display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-bottom:14px;">
-                    ${selectEstadoHTML}
+            <div class="doc-expand-v3">
+                ${maquinasHTML}
+                ${selectsHTML}
+                <div class="doc-actions">
+                    <button class="btn-doc-edit" onclick="editarDocumento(${doc.id})">✏️ Editar</button>
+                    <button class="btn-doc-del"  onclick="eliminarDocumento(${doc.id})">🗑️ Eliminar</button>
                 </div>
-                <div style="display:flex; gap:8px;">
-                    <button onclick="editarDocumento(${doc.id})"
-                            style="flex:1; background:#e8f0fe; color:#1a73e8; border:1.5px solid #1a73e8; padding:9px; border-radius:8px; font-weight:800; cursor:pointer; transition:0.2s;">
-                        ✏️ Editar
+                <!-- Acciones rápidas: PDF y Mail -->
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                    <button onclick="abrirVistaPresupuesto(${doc.id}, this)"
+                            style="flex:1; padding:11px; background:linear-gradient(135deg,#1a73e8,#1155cc);
+                                   color:white; border:none; border-radius:10px; font-weight:900;
+                                   font-size:13px; cursor:pointer; box-shadow:0 3px 10px rgba(26,115,232,0.35);
+                                   display:flex; align-items:center; justify-content:center; gap:6px;
+                                   transition:all 0.2s; min-height:44px;">
+                        📄 Ver y Exportar PDF
                     </button>
-                    <button onclick="eliminarDocumento(${doc.id})"
-                            style="flex:1; background:#fce8e6; color:#d93025; border:1.5px solid #d93025; padding:9px; border-radius:8px; font-weight:800; cursor:pointer; transition:0.2s;">
-                        🗑️ Eliminar
+                    <button onclick="prepararMail(${doc.id})"
+                            style="flex:1; padding:11px; background:linear-gradient(135deg,#0f9d58,#0b7a42);
+                                   color:white; border:none; border-radius:10px; font-weight:900;
+                                   font-size:13px; cursor:pointer; box-shadow:0 3px 10px rgba(15,157,88,0.35);
+                                   display:flex; align-items:center; justify-content:center; gap:6px;
+                                   transition:all 0.2s; min-height:44px;">
+                        📧 Preparar Mail
                     </button>
                 </div>
             </div>
@@ -1188,6 +1384,335 @@ function renderizarTarjetas() {
         contenedor.appendChild(div);
     });
 }
+
+// ════════════════════════════════════════════════════════════════
+//  🗂️ HISTORIAL LOCAL DE PDFs GENERADOS
+// ════════════════════════════════════════════════════════════════
+
+// ── Registrar PDF con base64 para previsualización ──────────────
+function registrarPDFGenerado(doc, base64, nombre) {
+    try {
+        const historial = JSON.parse(localStorage.getItem('historial_pdfs') || '[]');
+        const entrada = {
+            ts:      Date.now(),
+            id:      doc.id,
+            cliente: doc.cliente || '—',
+            fecha:   doc.fechaLimpia || doc.fecha || '—',
+            total:   doc.total || 0,
+            modo:    typeof modoApp !== 'undefined' ? modoApp : '—',
+            nombre:  nombre || ('Presupuesto_' + (doc.cliente || 'doc') + '.pdf'),
+            base64:  base64 || null   // null si no se guardó por tamaño
+        };
+        historial.unshift(entrada);
+
+        // Guardar — si excede 4MB de localStorage, guardar sin base64
+        const json = JSON.stringify(historial.slice(0, 50));
+        if (json.length < 4_000_000) {
+            localStorage.setItem('historial_pdfs', json);
+        } else {
+            // Guardar sin base64 los más viejos
+            const sinBlob = historial.slice(0, 50).map((e, i) =>
+                i === 0 ? e : { ...e, base64: null }
+            );
+            localStorage.setItem('historial_pdfs', JSON.stringify(sinBlob));
+        }
+    } catch(e) { console.warn('historial_pdfs error:', e); }
+}
+
+// ── Ver historial con buscador y previsualización ────────────────
+function verHistorialPDFs() {
+    const modal = document.getElementById('modal-historial-pdfs');
+    const lista = document.getElementById('lista-historial-pdfs');
+    if (!modal || !lista) { mostrarMensaje('Modal no encontrado.', 'error'); return; }
+
+    // Renderizar con buscador
+    const renderLista = (filtro) => {
+        let historial = [];
+        try { historial = JSON.parse(localStorage.getItem('historial_pdfs') || '[]'); }
+        catch(e) {}
+
+        const q = (filtro || '').toLowerCase().trim();
+        const filtrados = q
+            ? historial.filter(r => (r.cliente || '').toLowerCase().includes(q) ||
+                                    (r.fecha   || '').includes(q) ||
+                                    (r.nombre  || '').toLowerCase().includes(q))
+            : historial;
+
+        if (filtrados.length === 0) {
+            lista.innerHTML = `
+                <div style="text-align:center; padding:40px 20px; color:var(--inf-muted);">
+                    <div style="font-size:36px; margin-bottom:10px;">${q ? '🔍' : '📭'}</div>
+                    <div style="font-weight:700;">${q ? 'Sin resultados para "' + q + '"' : 'No hay PDFs generados todavía.'}</div>
+                </div>`;
+            return;
+        }
+
+        lista.innerHTML = filtrados.map((r, i) => {
+            const d          = new Date(r.ts);
+            const cuandoStr  = d.toLocaleDateString('es-AR') + ' ' +
+                               d.toLocaleTimeString('es-AR', { hour:'2-digit', minute:'2-digit' });
+            const totalStr   = r.total > 0
+                ? '$' + Math.round(r.total).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.')
+                : '—';
+            const tieneBlob  = !!r.base64;
+            const btnVer     = tieneBlob
+                ? `<button onclick="abrirPDFDesdeHistorial(${i})"
+                           style="background:var(--inf-azul); color:white; border:none;
+                                  padding:7px 14px; border-radius:8px; font-weight:800;
+                                  font-size:12px; cursor:pointer; white-space:nowrap;
+                                  transition:all 0.2s;">
+                       👁️ Ver PDF
+                   </button>`
+                : `<span style="font-size:11px; color:var(--inf-muted); white-space:nowrap;">Sin preview</span>`;
+
+            return `<div style="display:flex; align-items:center; justify-content:space-between;
+                        padding:13px 16px; border-bottom:1px solid var(--inf-border); gap:10px;
+                        flex-wrap:wrap; animation:scaleIn 0.2s ease ${i*0.025}s both;">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-weight:900; font-size:14px; color:var(--inf-text);
+                                overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                        ${r.cliente}
+                    </div>
+                    <div style="font-size:12px; color:var(--inf-sub); margin-top:2px;">
+                        ${r.fecha} &nbsp;·&nbsp;
+                        ${r.modo === 'presupuestos' ? '💰 Presupuesto' : '🛠️ Oferta'}
+                        &nbsp;·&nbsp; <span style="color:var(--inf-muted);">${cuandoStr}</span>
+                    </div>
+                    <div style="font-size:11px; color:var(--inf-muted); margin-top:2px;
+                                overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                        📄 ${r.nombre || '—'}
+                    </div>
+                </div>
+                <div style="display:flex; flex-direction:column; align-items:flex-end; gap:6px; flex-shrink:0;">
+                    <div style="font-weight:900; color:var(--inf-azul); font-size:15px;">${totalStr}</div>
+                    ${btnVer}
+                </div>
+            </div>`;
+        }).join('');
+
+        // Guardar filtrados en window para que abrirPDFDesdeHistorial pueda acceder por índice
+        window._historialFiltrado = filtrados;
+    };
+
+    // Construir modal con buscador
+    lista.innerHTML = '';
+    // Inyectar buscador si no existe
+    let buscadorHist = document.getElementById('buscador-historial-pdfs');
+    if (!buscadorHist) {
+        buscadorHist = document.createElement('div');
+        buscadorHist.id = 'buscador-historial-pdfs';
+        buscadorHist.style.cssText = 'padding:12px 16px; border-bottom:1px solid var(--inf-border);';
+        buscadorHist.innerHTML = `
+            <input type="text" id="input-busq-hist"
+                   placeholder="🔍 Buscar por cliente, fecha, nombre..."
+                   style="width:100%; padding:10px 14px; border:2px solid var(--inf-border);
+                          border-radius:10px; font-size:14px; font-weight:600; outline:none;
+                          background:var(--inf-card); color:var(--inf-text);
+                          transition:border-color 0.2s;"
+                   oninput="verHistorialPDFs._render(this.value)"
+                   onfocus="this.style.borderColor='var(--inf-azul)'"
+                   onblur="this.style.borderColor='var(--inf-border)'">`;
+        lista.parentNode.insertBefore(buscadorHist, lista);
+    } else {
+        // Limpiar buscador al abrir
+        const inp = document.getElementById('input-busq-hist');
+        if (inp) inp.value = '';
+    }
+
+    // Exponer función de render para el input
+    verHistorialPDFs._render = renderLista;
+    renderLista('');
+
+    modal.style.display = 'flex';
+    setTimeout(() => {
+        modal.classList.add('mostrar');
+        document.getElementById('input-busq-hist')?.focus();
+    }, 50);
+}
+
+// ── Abrir PDF desde el historial local ──────────────────────────
+function abrirPDFDesdeHistorial(idx) {
+    const historial = window._historialFiltrado || [];
+    const entrada   = historial[idx];
+    if (!entrada || !entrada.base64) {
+        mostrarMensaje('Este PDF ya no está en caché. Regeneralo desde "Ver Guardados".', 'error');
+        return;
+    }
+    try {
+        const bytes  = atob(entrada.base64);
+        const arr    = new Uint8Array(bytes.length);
+        for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+        const blob   = new Blob([arr], { type: 'application/pdf' });
+        const url    = URL.createObjectURL(blob);
+        window.open(url, '_blank');
+        setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch(e) {
+        mostrarMensaje('Error al abrir el PDF: ' + e.message, 'error');
+    }
+}
+
+
+
+// ── Barra de progreso para PDF ──────────────────────────────────
+let _pdfEnProceso = false;
+
+function _mostrarProgressPDF(btnEl) {
+    if (!btnEl) return;
+    btnEl.disabled = true;
+    btnEl.dataset.textoOriginal = btnEl.innerHTML;
+    btnEl.innerHTML = `
+        <span style="display:flex; align-items:center; gap:8px; justify-content:center;">
+            <span style="display:inline-block; width:16px; height:16px; border:2px solid rgba(255,255,255,0.4);
+                         border-top-color:white; border-radius:50%; animation:spin 0.7s linear infinite;"></span>
+            Generando PDF...
+        </span>`;
+}
+function _ocultarProgressPDF(btnEl) {
+    if (!btnEl) return;
+    btnEl.disabled = false;
+    btnEl.innerHTML = btnEl.dataset.textoOriginal || '📄 Ver y Exportar PDF';
+    _pdfEnProceso  = false;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  📄 GENERADOR DE PRESUPUESTO PDF
+// ════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════
+//  📄 GENERADOR PDF REAL — jsPDF  (landscape A4, réplica exacta del Excel)
+//  Columnas Excel: A(9.14), B(13), C(7.86), D(60.29), E(9.71), F(16.29), G(22) chars
+//  Página: landscape, márgenes 0.25" = 6.35mm
+// ════════════════════════════════════════════════════════════════
+
+// ════════════════════════════════════════════════════════════════
+//  📄 GENERAR PDF — usa Plantilla_Presupuesto en Google Sheets
+//  Flujo: datos → backend escribe en la plantilla → exporta PDF
+//  → descarga directa en el navegador → registra en Presupuestos_Emitidos
+// ════════════════════════════════════════════════════════════════
+
+function abrirVistaPresupuesto(id, btnEl) {
+    if (_pdfEnProceso) return;
+    _pdfEnProceso = true;
+    _mostrarProgressPDF(btnEl);
+
+    const doc = documentosGuardados.find(d => String(d.id) === String(id));
+    if (!doc) {
+        mostrarMensaje('❌ Documento no encontrado.', 'error');
+        _ocultarProgressPDF(btnEl);
+        _pdfEnProceso = false;
+        return;
+    }
+
+    // ── Fecha limpia ─────────────────────────────────────────────
+    const fechaLimpia = (() => {
+        if (doc.fechaLimpia && doc.fechaLimpia !== 'Sin Fecha') return doc.fechaLimpia;
+        const f = String(doc.fecha || '');
+        if (!f) return new Date().toLocaleDateString('es-AR');
+        if (f.includes('T')) {
+            const d = new Date(f);
+            return `${String(d.getUTCDate()).padStart(2,'0')}/${String(d.getUTCMonth()+1).padStart(2,'0')}/${d.getUTCFullYear()}`;
+        }
+        return f;
+    })();
+
+    // ── Payload para el backend ──────────────────────────────────
+    const payload = {
+        cliente: doc.cliente  || '',
+        cuit:    doc.cuit     || '',
+        fecha:   fechaLimpia,
+        total:   Number(doc.total) || 0,
+        items:   (doc.items || []).map(m => ({
+            desc:       m.desc      || '',
+            tipo:       m.tipo      || '',
+            cant:       Number(m.cant)   || 1,
+            precio:     Number(m.precio) || 0,
+            metros:     m.metros     || '',
+            terminales: m.terminales || ''
+        }))
+    };
+
+    // ── Llamar al backend ────────────────────────────────────────
+    mostrarMensaje('⏳ Generando PDF desde la plantilla... puede tardar unos segundos.', 'cargando');
+
+    llamarAPI({ accion: 'actualizarPlantillaYExportarPDF', payload })
+        .then(result => {
+            if (!result.ok || !result.base64) {
+                throw new Error(result.error || 'El backend no devolvió el PDF.');
+            }
+
+            // ── Descargar PDF desde base64 ───────────────────────
+            const bytes    = atob(result.base64);
+            const arr      = new Uint8Array(bytes.length);
+            for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+            const blob     = new Blob([arr], { type: 'application/pdf' });
+            const url      = URL.createObjectURL(blob);
+            const link     = document.createElement('a');
+            link.href      = url;
+            link.download  = result.nombre || `Presupuesto_${doc.cliente}.pdf`;
+            document.body.appendChild(link);
+            link.click();
+            link.remove();
+            setTimeout(() => URL.revokeObjectURL(url), 30000);
+
+            // Registrar en historial con base64 para preview posterior
+            registrarPDFGenerado(doc, result.base64, result.nombre);
+            mostrarMensaje(`✅ PDF descargado: ${result.nombre}`, 'exito');
+        })
+        .catch(err => {
+            console.error('PDF error:', err);
+            mostrarMensaje('❌ Error al generar PDF: ' + err.message, 'error');
+        })
+        .finally(() => {
+            setTimeout(() => _ocultarProgressPDF(btnEl), 600);
+        });
+}
+
+
+// ─────────────────────────────────────────────────────────────────
+//  📧 PREPARAR MAIL — abre Outlook Web Compose directamente
+//  No depende del cliente de correo del SO ni la cuenta default
+// ─────────────────────────────────────────────────────────────────
+function prepararMail(id) {
+    const doc = documentosGuardados.find(d => String(d.id) === String(id));
+    if (!doc) return;
+
+    const cliente = doc.cliente || '—';
+    const total   = Number(doc.total) || 0;
+    const fecha   = doc.fechaLimpia || doc.fecha || '—';
+
+    const asunto = 'Presupuesto Support Fitness — ' + cliente;
+    const cuerpo = [
+        'Buenas tardes, Señores de administración.',
+        '',
+        'Adjunto el presupuesto correspondiente al trabajo a realizar en sus instalaciones.',
+        '',
+        'Cliente: ' + cliente,
+        doc.cuit ? 'CUIT: ' + doc.cuit : null,
+        'Fecha: ' + fecha,
+        total > 0 ? 'Monto total: $' + total.toLocaleString('es-AR') : null,
+        '',
+        'Las reparaciones quedarán confirmadas una vez se envíe el comprobante de pago correspondiente.',
+        '',
+        'Por favor Confirmar recepción.',
+        '',
+        'Cordiales Saludos',
+        'Facundo Durán',
+        'SUPPORT FITNESS',
+        'Tel: +54 9 11 6117-7878  |  support_fitness@hotmail.com',
+        'Chile 1239, CP1098 - CABA  |  CUIT: 20-26285613-6'
+    ].filter(l => l !== null).join('\n');
+
+    // Outlook Web App — no abre el cliente del SO
+    const params = new URLSearchParams({
+        subject: asunto,
+        body:    cuerpo
+    });
+    window.open('https://outlook.live.com/mail/0/deeplink/compose?' + params.toString(), '_blank');
+}
+
+
+
+// ─────────────────────────────────────────────────────────────────
 // 🔥 NUEVO CAMBIO DE ESTADO (Para Múltiples Selects) 🔥
 // Variable para recordar qué presupuesto estamos intentando facturar
 let tempDocParaFactura = null;
@@ -1712,8 +2237,7 @@ function renderizarAbonos() {
     ['facturar', 'enviar', 'completado'].forEach(s => {
         const btn = document.getElementById(`tab-sec-${s}`);
         if(btn) {
-            btn.style.background = (sectorAbonoActual === s) ? tabs[s] : '#f1f3f4';
-            btn.style.color = (sectorAbonoActual === s) ? text[s] : '#5f6368';
+            btn.classList.toggle('activo-sector', sectorAbonoActual === s);
         }
     });
  
@@ -1824,66 +2348,69 @@ function renderizarAbonos() {
             </button>` : '';
  
         const div = document.createElement('div');
-        div.className = "card";
-        div.style.cssText = "padding:15px; margin-bottom:10px; border-left:6px solid " +
-            (sectorAbonoActual === 'facturar' ? '#d93025' : (sectorAbonoActual === 'enviar' ? '#1a73e8' : '#34a853'));
- 
-        div.innerHTML = `
-            <div style="display:flex; justify-content:space-between; align-items:start;">
-                <div>
-                    <span style="font-size:11px; color:#999;">ORDEN #${a.orden}</span>
-                    <h4 style="margin:2px 0; font-size:15px;">${a.gym} ${badgeFrecuencia}</h4>
-                    <p style="margin:0; font-size:13px; color:#5f6368;">
-                        CUIT: <span onclick="copiarAlPortapapeles('${cuitSinGuiones}', 'CUIT copiado: ${cuitSinGuiones}')" style="cursor:pointer; color:#1a73e8; font-weight:bold; background:#e8f0fe; padding:2px 6px; border-radius:4px;" title="Tocar para copiar sin guiones">📋 ${a.cuit}</span>
-                    </p>
-                    <div style="margin-top: 5px;">
-                        ${htmlPrecio}
-                    </div>
-                    ${sectorAbonoActual !== 'completado' ? btnHistorialPrecios : ''}
-                    ${sectorAbonoActual === 'facturar' ? `
-                        <button onclick="copiarAlPortapapeles('${textoMantenimiento}', 'Detalle de Factura copiado')" style="margin-top:12px; background:#f1f3f4; color:#5f6368; border:1px solid #ccc; border-radius:4px; font-size:11px; padding:4px 8px; font-weight:bold; cursor:pointer; display:block;">
-                            📋 Copiar Detalle Factura
-                        </button>
-                    ` : ''}
-                </div>
-                <div style="text-align:right;">${alertasTopHTML}</div>
-            </div>
- 
-            <div style="margin-top:15px; display:flex; gap:10px;">
-                ${sectorAbonoActual === 'facturar' ? `
-                    <input type="text" placeholder="Nº Factura..." id="inp-fact-${a.orden}"
-                           onkeypress="if(event.key === 'Enter') guardarFacturaAbono(${a.orden}, '${idMes}')"
-                           style="flex:1; padding:8px; border-radius:6px; border:1.5px solid #ddd; outline:none; font-weight:bold;">
-                    <button onclick="guardarFacturaAbono(${a.orden}, '${idMes}')" style="background:#1a73e8; color:white; border:none; padding:8px 15px; border-radius:6px; font-weight:bold; cursor:pointer;">💾 Facturar</button>
-                ` : sectorAbonoActual === 'enviar' ? `
-                    <div style="flex:1; display:flex; flex-direction:column;">
-                        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom: 10px;">
-                            <span style="color:#1a73e8; font-weight:bold; font-size:13px;">Factura N°: ${fNro}</span>
-                            <button onclick="revertirAFacturar(${a.orden}, '${idMes}')" style="background:white; color:#d93025; border:1px solid #d93025; padding:4px 8px; border-radius:4px; font-size:11px; font-weight:bold; cursor:pointer;">✏️ Editar N°</button>
-                        </div>
-                        ${alertasEnvioHTML}
-                        ${botonIpcEnvio}
-                        
-                        <div style="flex:1; display:flex; flex-direction:column; gap:5px; margin-bottom:10px;">
-                            <label style="font-size:11px; font-weight:bold; color:#5f6368;">📧 Correos del cliente:</label>
-                            <textarea id="txt-mail-${a.orden}" style="width:100%; font-size:12px; padding:8px; border:2px solid #fbbc04; border-radius:6px; outline:none; font-family:monospace; resize:vertical; min-height:40px;" rows="2">${correosFormateados}</textarea>
-                        </div>
+        div.className = "abono-card";
+        const accentColor = sectorAbonoActual === 'facturar' ? '#d93025' : sectorAbonoActual === 'enviar' ? '#1a73e8' : '#0f9d58';
+        div.style.borderLeft = `4px solid ${accentColor}`;
 
-                        <div style="display:flex; gap:8px; width:100%;">
-                            <button onclick="copiarAlPortapapeles(document.getElementById('txt-mail-${a.orden}').value, 'Mails copiados al portapapeles')" style="flex:1; background:#fbbc04; color:#333; border:none; padding:10px; border-radius:8px; font-weight:bold; cursor:pointer;">
-                                📋 Copiar Mails
-                            </button>
-                            <button onclick="marcarComoEnviado(${a.orden}, '${idMes}')" style="flex:1; background:#0f9d58; color:white; border:none; padding:10px; border-radius:8px; font-weight:bold; cursor:pointer;">
-                                ✅ Marcar Enviado
-                            </button>
-                        </div>
+        div.innerHTML = `
+            <div class="abono-card-header">
+                <div style="display:flex; justify-content:space-between; align-items:start;">
+                    <div style="flex:1; min-width:0;">
+                        <div style="font-size:10px; color:#9aa0a6; font-weight:700; text-transform:uppercase; letter-spacing:0.4px;">ORDEN #${a.orden}</div>
+                        <div class="abono-gym-name">${a.gym} ${badgeFrecuencia}</div>
+                        <span class="abono-cuit-badge" onclick="copiarAlPortapapeles('${cuitSinGuiones}', 'CUIT copiado: ${cuitSinGuiones}')" title="Tocar para copiar">
+                            📋 ${a.cuit}
+                        </span>
+                    </div>
+                    <div style="text-align:right; flex-shrink:0;">${alertasTopHTML}</div>
+                </div>
+                <div style="margin-top:8px;">
+                    ${htmlPrecio}
+                </div>
+                ${sectorAbonoActual !== 'completado' ? btnHistorialPrecios : ''}
+                ${sectorAbonoActual === 'facturar' ? `
+                    <button onclick="copiarAlPortapapeles('${textoMantenimiento}', 'Detalle de Factura copiado')"
+                            class="btn-mini" style="margin-top:10px; background:#f4f6f9; color:#475467; border:1px solid #e0e0e0;">
+                        📋 Copiar Detalle Factura
+                    </button>` : ''}
+            </div>
+
+            <div class="abono-body">
+                ${sectorAbonoActual === 'facturar' ? `
+                    <div style="margin-top:4px;">
+                        <input type="text" placeholder="Nº Factura (Enter para guardar)" id="inp-fact-${a.orden}"
+                               class="inp-factura"
+                               onkeypress="if(event.key==='Enter') guardarFacturaAbono(${a.orden}, '${idMes}')">
+                        <button class="btn-facturar" onclick="guardarFacturaAbono(${a.orden}, '${idMes}')" style="width:100%; margin-top:8px;">
+                            💾 Facturar
+                        </button>
+                    </div>
+                ` : sectorAbonoActual === 'enviar' ? `
+                    <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                        <span style="color:#1a73e8; font-weight:800; font-size:14px;">📄 Factura N°: ${fNro}</span>
+                        <button onclick="revertirAFacturar(${a.orden}, '${idMes}')"
+                                class="btn-mini" style="background:#fce8e6; color:#d93025;">✏️ Editar N°</button>
+                    </div>
+                    ${alertasEnvioHTML}
+                    ${botonIpcEnvio}
+                    <label style="font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.4px; color:#5f6368; margin-bottom:4px; display:block;">📧 Correos del cliente</label>
+                    <textarea id="txt-mail-${a.orden}"
+                              style="width:100%; font-size:12px; padding:10px; border:2px solid #fbbc04; border-radius:10px; outline:none; font-family:monospace; resize:vertical; min-height:44px; box-sizing:border-box;"
+                              rows="2">${correosFormateados}</textarea>
+                    <div class="abono-actions" style="margin-top:10px;">
+                        <button class="btn-copiar" onclick="copiarAlPortapapeles(document.getElementById('txt-mail-${a.orden}').value, 'Mails copiados')">📋 Copiar Mails</button>
+                        <button class="btn-enviar" style="background:#7c3aed; flex:1.5;"
+                                onclick="enviarCorreoAbonoAutomatico(${a.orden}, '${idMes}', '${a.gym.replace(/'/g,"\\'")}', '${periodoStr}', ${pBase}, '${fNro}')">
+                            📧 Enviar Correo
+                        </button>
+                        <button class="btn-enviar" onclick="marcarComoEnviado(${a.orden}, '${idMes}')">✅ Marcar Enviado</button>
                     </div>
                 ` : `
-                    <div style="flex:1; display:flex; justify-content:space-between; align-items:center;">
-                        <span style="color:#0f9d58; font-weight:bold; font-size:13px;">✅ Factura ${fNro} enviada.</span>
-                        <div style="display:flex; gap:5px;">
-                            <button onclick="revertirAEnviar(${a.orden}, '${idMes}')" style="background:#fce8e6; color:#d93025; border:none; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:bold; cursor:pointer;" title="Volver a Por Enviar">❌ Anular Envío</button>
-                            <button onclick="revertirAFacturar(${a.orden}, '${idMes}')" style="background:#f1f3f4; color:#5f6368; border:1px solid #ccc; padding:6px 10px; border-radius:6px; font-size:11px; font-weight:bold; cursor:pointer;" title="Volver a Por Facturar">🗑️ Borrar N°</button>
+                    <div style="display:flex; justify-content:space-between; align-items:center;">
+                        <span style="color:#0f9d58; font-weight:800; font-size:14px;">✅ Factura ${fNro} enviada.</span>
+                        <div style="display:flex; gap:6px;">
+                            <button onclick="revertirAEnviar(${a.orden}, '${idMes}')"   class="btn-mini" style="background:#fce8e6; color:#d93025;">❌ Anular</button>
+                            <button onclick="revertirAFacturar(${a.orden}, '${idMes}')" class="btn-mini" style="background:#f4f6f9; color:#5f6368; border:1px solid #e0e0e0;">🗑️ Borrar N°</button>
                         </div>
                     </div>
                 `}
@@ -1942,6 +2469,75 @@ function guardarFacturaAbono(orden, idMes) {
     .catch(() => mostrarMensaje('❌ Error de red al guardar', 'error'));
 }
 
+// ════════════════════════════════════════════════════════════
+//  📧 ENVIAR CORREO DE ABONO AUTOMÁTICAMENTE (via Backend MailApp)
+//  Llama al servidor Google Apps Script que usa MailApp para
+//  enviar el correo directamente sin abrir ningún cliente de correo.
+// ════════════════════════════════════════════════════════════
+async function enviarCorreoAbonoAutomatico(orden, idMes, gimnasio, periodo, precio, factura) {
+    // Leer correos del textarea (puede haber sido editado manualmente)
+    const txtArea    = document.getElementById('txt-mail-' + orden);
+    const correos    = txtArea ? txtArea.value.trim() : '';
+
+    if (!correos) {
+        mostrarMensaje('⚠️ No hay correo cargado para este cliente. Completá el campo de mails.', 'error');
+        return;
+    }
+
+    const abono   = listaAbonosBase.find(a => String(a.orden) === String(orden)) || {};
+    const precioFmt = '$' + Math.round(precio).toString().replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    const anio    = new Date().getFullYear();
+
+    // Confirmación antes de enviar
+    const confirmar = confirm(
+        `¿Enviar correo automáticamente?\n\n` +
+        `📧 Para: ${correos}\n` +
+        `🏋️ Cliente: ${gimnasio}\n` +
+        `📅 Periodo: ${periodo} ${anio}\n` +
+        `📄 Factura: ${factura || '(sin número)'}\n` +
+        `💰 Importe: ${precioFmt}\n\n` +
+        `El correo se enviará desde la cuenta de Google del script.`
+    );
+    if (!confirmar) return;
+
+    // Feedback visual
+    const btn = event?.currentTarget;
+    if (btn) {
+        btn.disabled  = true;
+        btn.innerHTML = '<span style="display:inline-flex;align-items:center;gap:6px;"><span style="width:14px;height:14px;border:2px solid rgba(255,255,255,0.4);border-top-color:white;border-radius:50%;animation:spin 0.7s linear infinite;display:inline-block;"></span>Enviando...</span>';
+    }
+
+    try {
+        const result = await llamarAPI({
+            accion: 'enviarCorreoAbono',
+            payload: {
+                orden,
+                mesAnio:        idMes,
+                gimnasio,
+                periodo:        periodo + ' ' + anio,
+                factura,
+                precio,
+                correoCliente:  correos
+            }
+        });
+
+        if (result && result.ok) {
+            mostrarMensaje(`✅ Correo enviado a: ${correos}`, 'exito');
+            // Marcar como enviado automáticamente
+            await marcarComoEnviado(orden, idMes);
+        } else {
+            mostrarMensaje('❌ Error al enviar: ' + (result?.error || 'Error desconocido'), 'error');
+        }
+    } catch(e) {
+        mostrarMensaje('❌ Error de conexión: ' + e.message, 'error');
+    } finally {
+        if (btn) {
+            btn.disabled  = false;
+            btn.innerHTML = '📧 Enviar Correo';
+        }
+    }
+}
+
 function marcarComoEnviado(orden, idMes) {
     let mesIdx = parseInt(idMes.split("/")[0], 10) - 1;
     const abono = listaAbonosBase.find(a => a.orden === orden);
@@ -1978,4 +2574,37 @@ function toggleDarkMode() {
     const isDark = document.body.classList.contains('dark-mode');
     localStorage.setItem('darkMode', isDark ? 'yes' : 'no');
     document.getElementById('btn-dark-mode').innerText = isDark ? '☀️' : '🌙';
+}
+// ─── NUEVA FUNCIÓN INTERNA PARA ENVIAR CORREO DESDE EL PANEL DE INFORMES ───
+function enviarMailRapidoAbono(orden, idMes) {
+    // Buscamos los datos del abono correspondiente en tu lista de memoria
+    const abono = listaAbonosBase.find(a => a.orden === parseInt(orden, 10)) || {};
+    const gimnasioNombre = abono.gimnasio || "Cliente";
+    
+    if(!confirm(`¿Querés enviar el correo predeterminado de Facturación a ${gimnasioNombre} para el periodo ${idMes}?`)) {
+        return;
+    }
+
+    mostrarMensaje('⏳ Enviando correo electrónico...', 'info');
+
+    // Llamada directa a tu API de Google Apps Script
+    llamarAPI({ 
+        accion: "enviarCorreoAbono", 
+        payload: { 
+            orden: orden,
+            mesAnio: idMes, 
+            gimnasio: gimnasioNombre,
+            correoCliente: "support_fitness@hotmail.com" // <-- CAMBIAR ACÁ por el correo real si lo tenés guardado en el abono
+        } 
+    })
+    .then(respuesta => {
+        if(respuesta.ok) {
+            mostrarMensaje('✅ Correo enviado correctamente', 'success');
+            // Opcionalmente pintás el casillero para indicar que ya fue enviado
+            marcarComoEnviado(orden, idMes); 
+        } else {
+            mostrarMensaje('❌ Error al enviar: ' + respuesta.error, 'error');
+        }
+    })
+    .catch(() => mostrarMensaje('❌ Error de conexión con el Servidor', 'error'));
 }
