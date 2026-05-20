@@ -19,7 +19,7 @@ async function guardarDocumento() {
         let isCable = tipo.toLowerCase().includes('cable');
         let metros = isCable ? (parseFloat(item.querySelector('.maq-metros').value) || 0) : null;
         let terminales = isCable ? (parseInt(item.querySelector('.maq-terminales').value) || 0) : null;
-        
+
         maquinas.push({
             tipo: tipo,
             desc: item.querySelector('.maq-desc').value.trim(),
