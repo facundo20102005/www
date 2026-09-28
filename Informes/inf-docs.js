@@ -1,3 +1,4 @@
+console.info('[inf-docs] build 2026-09-28 · Ver PDF / Facturado-Anulado');
 // ── inf-docs.js — Documentos, ítems, PDF y correo ─────────────
 
 async function guardarDocumento() {
@@ -255,8 +256,6 @@ function clasificarDocumento(doc) {
     if (doc.tipoDoc) {
         const tipo = doc.tipoDoc.toLowerCase();
         if (tipo.includes('abono')) return 'abono';
-        // Si dice "presu", le asigna el ícono MORADO de "Enviado" (para auditar)
-        if (tipo.includes('presu')) return 'presup_enviado'; 
         if (tipo.includes('reparaci')) return 'reparacion';
     }
 
@@ -274,7 +273,6 @@ function clasificarDocumento(doc) {
     }
 
     // ── POR DEFECTO ──
-    if (estado === 'enviado') return 'presup_enviado';
     return 'reparacion';
 }
  
@@ -336,6 +334,91 @@ function badgeTipoDoc(tipo, doc) {
                letter-spacing:0.3px; white-space:nowrap; flex-shrink:0; cursor:help;">
         ${c.label}
     </span>`;
+}
+
+// ════════════════════════════════════════════════════════════════
+//  Estado operativo simplificado: Facturado / Anulado
+//  ("Cancelada (NC)" lo escribe el backend al detectar una Nota de Crédito)
+// ════════════════════════════════════════════════════════════════
+function _estadoOperativo(doc) {
+    const e = String(doc.estado || '').toLowerCase();
+    if (/anulad|cancelad/.test(e)) return 'anulado';
+    if (e.startsWith('facturado')) return 'facturado';
+    return 'sinfacturar'; // estados viejos (Pendiente / Enviado)
+}
+
+// ════════════════════════════════════════════════════════════════
+//  📄 VER PDF — busca la factura en la carpeta Drive "Facturas Support"
+//  por número de factura y la muestra como vista previa.
+// ════════════════════════════════════════════════════════════════
+async function verPDFFactura(id, btnEl, fileId) {
+    const doc = documentosGuardados.find(d => String(d.id) === String(id));
+    if (!doc) { mostrarMensaje('❌ Documento no encontrado.', 'error'); return; }
+
+    const num = String(doc.numFactura || '').trim();
+    if (!/\d{4}/.test(num)) {
+        mostrarMensaje('⚠️ Este documento no tiene número de factura cargado.', 'error');
+        return;
+    }
+
+    const textoOriginal = btnEl ? btnEl.innerHTML : '';
+    if (btnEl) { btnEl.disabled = true; btnEl.innerHTML = '⏳ Buscando...'; }
+
+    try {
+        const res = await llamarAPI({
+            accion: 'obtenerFacturaPDFDrive',
+            payload: { numFactura: num, cuit: doc.cuit || '', fileId: fileId || '' }
+        }, 60000);
+
+        if (!res || !res.ok) throw new Error((res && res.error) || 'No se pudo obtener la factura.');
+        _mostrarVisorFactura(doc, res);
+    } catch (e) {
+        mostrarMensaje('❌ ' + e.message, 'error');
+    } finally {
+        if (btnEl) { btnEl.disabled = false; btnEl.innerHTML = textoOriginal; }
+    }
+}
+
+function _mostrarVisorFactura(doc, res) {
+    document.getElementById('_visor-factura')?.remove();
+    if (window._visorFacturaUrl) { URL.revokeObjectURL(window._visorFacturaUrl); window._visorFacturaUrl = null; }
+
+    const sel = res.seleccionado;
+    const bytes = atob(sel.base64);
+    const arr = new Uint8Array(bytes.length);
+    for (let i = 0; i < bytes.length; i++) arr[i] = bytes.charCodeAt(i);
+    const url = URL.createObjectURL(new Blob([arr], { type: sel.mime || 'application/pdf' }));
+    window._visorFacturaUrl = url;
+
+    const otros = (res.archivos || []).length > 1
+        ? `<div style="display:flex; gap:6px; flex-wrap:wrap; padding:8px 14px; background:#111827;">
+              <span style="font-size:12px; color:#fbbf24; font-weight:700; align-self:center;">Hay ${res.archivos.length} archivos parecidos:</span>
+              ${res.archivos.map(a => `
+                  <button onclick="verPDFFactura(${doc.id}, null, '${a.id}')"
+                          style="padding:5px 10px; border-radius:8px; font-size:11px; font-weight:700; cursor:pointer;
+                                 border:1.5px solid #60a5fa; color:${a.id===sel.id?'white':'#60a5fa'};
+                                 background:${a.id===sel.id?'#1a73e8':'transparent'};">${a.name}</button>`).join('')}
+           </div>` : '';
+
+    const ov = document.createElement('div');
+    ov.id = '_visor-factura';
+    ov.style.cssText = 'position:fixed; inset:0; z-index:99999; background:rgba(0,0,0,0.75); display:flex; align-items:center; justify-content:center; padding:12px;';
+    ov.innerHTML = `
+        <div style="background:#0f172a; border-radius:14px; width:100%; max-width:900px; height:94vh; display:flex; flex-direction:column; overflow:hidden; border:1px solid rgba(255,255,255,0.1);">
+            <div style="display:flex; align-items:center; gap:8px; padding:10px 14px; background:#1e293b;">
+                <div style="flex:1; min-width:0;">
+                    <div style="font-weight:800; font-size:14px; color:#e2e8f0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">${sel.name}</div>
+                    <div style="font-size:11px; color:#94a3b8;">${doc.cliente} · ${doc.numFactura}</div>
+                </div>
+                <button onclick="window.open('${url}','_blank')" style="padding:8px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.15); background:transparent; color:#e2e8f0; font-weight:700; font-size:12px; cursor:pointer;">↗ Abrir</button>
+                <a href="${sel.driveUrl}" target="_blank" rel="noopener" style="padding:8px 12px; border-radius:8px; border:1px solid rgba(255,255,255,0.15); color:#e2e8f0; font-weight:700; font-size:12px; text-decoration:none;">Drive</a>
+                <button onclick="document.getElementById('_visor-factura').remove()" style="padding:8px 12px; border-radius:8px; border:none; background:#d93025; color:white; font-weight:900; font-size:12px; cursor:pointer;">✕ Cerrar</button>
+            </div>
+            ${otros}
+            <iframe src="${url}" style="flex:1; width:100%; border:0; background:#525659;"></iframe>
+        </div>`;
+    ov.addEventListener('click', e => { if (e.target === ov) ov.remove(); });
+    document.body.appendChild(ov);
 }
 
 function renderizarTarjetas() {
@@ -450,7 +533,6 @@ function renderizarTarjetas() {
             { val: 'todos',          label: `Todos (${conteos.todos})`,                       color: '#1a73e8' },
             { val: 'abono',          label: `📅 Abonos (${conteos.abono})`,                   color: '#60a5fa' },
             { val: 'reparacion',     label: `🔧 Reparaciones (${conteos.reparacion})`,        color: '#4ade80' },
-            { val: 'presup_enviado', label: `📤 Enviados (${conteos.presup_enviado})`,         color: '#c084fc' },
             sinCuitCount > 0 ? { val: 'sin_cuit', label: `⚠️ Sin CUIT (${sinCuitCount})`, color: '#fb923c' } : null,
         ].filter(Boolean);
         tipoScrollEl.innerHTML = tiposChips.map(t => `
@@ -507,7 +589,8 @@ function renderizarTarjetas() {
     paginados.forEach((doc, animIdx) => {
         const estadoReal = doc.estado || "Pendiente";
         const esPagado   = doc.pagado === "Pagado";
-        const colorEst   = estadoReal === "Facturado / Aprobado" ? "#34a853" : estadoReal === "Enviado" ? "#1a73e8" : "#fbbc04";
+        const estadoNorm = _estadoOperativo(doc); // 'facturado' | 'anulado' | 'sinfacturar'
+        const colorEst   = estadoNorm === 'facturado' ? "#34a853" : estadoNorm === 'anulado' ? "#f87171" : "#fbbc04";
         const colorPag   = esPagado ? "#0f9d58" : "#d93025";
         const bgPag      = esPagado ? "#e6f4ea" : "#fce8e6";
  
@@ -548,9 +631,9 @@ function renderizarTarjetas() {
                             style="width:100%; padding:10px; border-radius:10px; border:2px solid ${colorEst};
                                    font-weight:800; color:${colorEst}; outline:none;
                                    background:#1e293b; cursor:pointer; font-size:13px;">
-                        <option value="Pendiente"            ${estadoReal==='Pendiente'?'selected':''}>⏳ Pendiente</option>
-                        <option value="Enviado"              ${estadoReal==='Enviado'?'selected':''}>📤 Enviado</option>
-                        <option value="Facturado / Aprobado" ${estadoReal==='Facturado / Aprobado'?'selected':''}>✅ Facturado / Aprobado</option>
+                        ${estadoNorm==='sinfacturar' ? `<option value="${estadoReal}" selected disabled>⏳ Sin facturar</option>` : ''}
+                        <option value="Facturado / Aprobado" ${estadoNorm==='facturado'?'selected':''}>✅ Facturado</option>
+                        <option value="Anulado"              ${estadoNorm==='anulado'?'selected':''}>🚫 Anulado</option>
                     </select>
                 </div>
                 <div>
@@ -578,7 +661,7 @@ function renderizarTarjetas() {
         // ... acá termina el selectsHTML existente : '';
 
         // 🔥 CÓDIGO NUEVO A PEGAR 🔥
-        const tipoInformeActual = doc.tipoDoc || "Reparacion-Presu.";
+        const tipoInformeActual = doc._tipo === 'abono' ? 'Abono' : 'Reparación';
         const selectTipoDocHTML = `
             <div style="margin-bottom:12px;">
                 <div style="font-size:11px; font-weight:800; text-transform:uppercase; letter-spacing:0.4px; color:#94a3b8; margin-bottom:4px;">Tipo de Informe (PDF)</div>
@@ -586,7 +669,6 @@ function renderizarTarjetas() {
                         style="width:100%; padding:10px; border-radius:10px; border:2px solid #60a5fa;
                                font-weight:800; color:#60a5fa; outline:none;
                                background:#1e293b; cursor:pointer; font-size:13px;">
-                    <option value="Reparación-Presu." ${tipoInformeActual === 'Reparación-Presu.' ? 'selected' : ''}>Reparación-Presu.</option>
                     <option value="Reparación" ${tipoInformeActual === 'Reparación' ? 'selected' : ''}>Reparación</option>
                     <option value="Abono" ${tipoInformeActual === 'Abono' ? 'selected' : ''}>Abono</option>
                 </select>
@@ -627,31 +709,14 @@ function renderizarTarjetas() {
                 ${maquinasHTML}
                 ${selectsHTML}
                 ${selectTipoDocHTML} 
-                <div class="doc-actions">
-                    <button class="btn-doc-edit" onclick="editarDocumento(${doc.id})">✏️ Editar</button>
-                    <button class="btn-doc-del"  onclick="eliminarDocumento(${doc.id})">🗑️ Eliminar</button>
-                    ${doc.cliente ? `<button class="btn-doc-edit" style="background:#4a1d96; color:white; border:none;"
-                        onclick="verFotosEnDrive('${(doc.cliente||'').replace(/'/g,'')}', '${doc.fechaLimpia||''}')"
-                        title="Ver fotos de la visita en Google Drive">
-                        🖼️ Ver Fotos
-                    </button>` : ''}
-                </div>
-                <div style="display:flex; gap:8px; margin-top:8px;">
-                    <button onclick="abrirVistaPresupuesto(${doc.id}, this)"
+                <div style="display:flex; gap:8px; margin-top:4px;">
+                    <button class="btn-doc-edit" style="flex:1; min-height:44px;" onclick="editarDocumento(${doc.id})">✏️ Editar</button>
+                    <button onclick="verPDFFactura(${doc.id}, this)"
                             style="flex:1; padding:11px; background:linear-gradient(135deg,#1a73e8,#1155cc);
                                    color:white; border:none; border-radius:10px; font-weight:900;
                                    font-size:13px; cursor:pointer; box-shadow:0 3px 10px rgba(26,115,232,0.35);
-                                   display:flex; align-items:center; justify-content:center; gap:6px;
-                                   transition:all 0.2s; min-height:44px;">
-                        📄 Ver y Exportar PDF
-                    </button>
-                    <button onclick="prepararMail(${doc.id})"
-                            style="flex:1; padding:11px; background:linear-gradient(135deg,#0f9d58,#0b7a42);
-                                   color:white; border:none; border-radius:10px; font-weight:900;
-                                   font-size:13px; cursor:pointer; box-shadow:0 3px 10px rgba(15,157,88,0.35);
-                                   display:flex; align-items:center; justify-content:center; gap:6px;
-                                   transition:all 0.2s; min-height:44px;">
-                        📧 Preparar Mail
+                                   display:flex; align-items:center; justify-content:center; gap:6px; min-height:44px;">
+                        📄 Ver PDF
                     </button>
                 </div>
             </div>
@@ -1063,7 +1128,16 @@ async function cambiarEstado(id, nuevoValor, tipoCambiado) {
     if (!doc) return;
     
     if (tipoCambiado === 'estado') {
-        if (nuevoValor === 'Facturado / Aprobado' || nuevoValor === 'Facturado') {
+        if (nuevoValor === 'Anulado') {
+            const ok = await modalConfirmar({
+                titulo: '¿Anular este documento?',
+                mensaje: `${doc.cliente}\n${doc.numFactura || ''}\nQuedará marcado como Anulado.`,
+                icono: '🚫', color: '#d93025', btnOk: 'Anular', btnCancel: 'Cancelar'
+            });
+            if (!ok) { renderizarTarjetas(); return; }
+            doc.estado = 'Anulado';
+        } else if ((nuevoValor === 'Facturado / Aprobado' || nuevoValor === 'Facturado')
+                   && !(doc.numFactura && !/anulad/i.test(doc.numFactura))) {
             tempDocParaFactura = { id: id, nuevoValor: nuevoValor };
             document.getElementById('input-modal-factura').value = ""; 
             const modal = document.getElementById('modalFactura');
@@ -1071,7 +1145,7 @@ async function cambiarEstado(id, nuevoValor, tipoCambiado) {
             setTimeout(() => modal.classList.add('mostrar'), 10);
             return; 
         } else {
-            doc.estado = nuevoValor; 
+            doc.estado = nuevoValor; // p.ej. volver a Facturado un doc que ya tiene número
         }
     }
     
@@ -1603,7 +1677,7 @@ function generarPDFListaMensual() {
 
             <label style="font-size:11px;font-weight:800;color:var(--inf-sub,#94a3b8);text-transform:uppercase;letter-spacing:0.4px;display:block;margin-bottom:6px;">FILTRAR POR TIPO</label>
             <div style="display:flex;gap:8px;margin-bottom:20px;flex-wrap:wrap;">
-                ${[['todos','Todos','#1a73e8'],['abono','Abonos','#60a5fa'],['reparacion','Reparaciones','#4ade80'],['presup_enviado','Enviados','#c084fc']].map(([v,l,c]) =>
+                ${[['todos','Todos','#1a73e8'],['abono','Abonos','#60a5fa'],['reparacion','Reparaciones','#4ade80']].map(([v,l,c]) =>
                     `<button data-tipo="${v}" onclick="_lpdfSetTipo(this,'${v}')"
                         style="padding:6px 12px;border-radius:8px;border:1.5px solid ${c};
                                background:${v==='todos'?c:'transparent'};color:${v==='todos'?'white':c};
@@ -1703,7 +1777,7 @@ function _lpdfActualizarPreview() {
     const el   = document.getElementById('_lpdf-preview');
     if (el) {
         const total = docs.reduce(function(s, d) { return s + Number(d.total || 0); }, 0);
-        el.innerHTML = `<strong>${docs.length} facturas</strong> encontradas · Total: <strong style="color:#60a5fa;">$${Math.round(total).toLocaleString('es-AR')}</strong>`;
+        el.innerHTML = `<strong>${docs.length} facturas</strong> encontradas (${docs.filter(d => String(d.pagado||'').trim().toLowerCase()==='pagado').length} pagadas) · Total: <strong style="color:#60a5fa;">$${Math.round(total).toLocaleString('es-AR')}</strong>`;
     }
 }
 
@@ -1816,11 +1890,21 @@ async function _generarListaPDFEjecutar() {
                     const tipoBadge = doc._tipo === 'abono' ? '#1d4ed8' : doc._tipo === 'reparacion' ? '#15803d' : doc._tipo === 'presup_enviado' ? '#6b21a8' : '#92400e';
                     const tipoLabel = doc._tipo === 'abono' ? 'Abono' : doc._tipo === 'reparacion' ? 'Rep.' : doc._tipo === 'presup_enviado' ? 'Env.' : '?';
 
-                    const checkBoxesHtml = columnasSeleccionadas.map(() => 
-                        `<td style="text-align:center; border-bottom:1px solid #e5e7eb; padding:${paddingTd};">
-                            <div style="width:${fuenteGrande?'20px':'15px'}; height:${fuenteGrande?'20px':'15px'}; border:1.5px solid #9ca3af; border-radius:4px; margin:0 auto; background:#fff;"></div>
-                        </td>`
-                    ).join('');
+                    const pagadoDoc = String(doc.pagado || '').trim().toLowerCase() === 'pagado';
+                    const szBox = fuenteGrande ? '20px' : '15px';
+                    const checkBoxesHtml = columnasSeleccionadas.map(col => {
+                        if (pagadoDoc && col === 'Pagado') {
+                            return `<td style="text-align:center; border-bottom:1px solid #e5e7eb; padding:${paddingTd};">
+                                <div style="width:${szBox}; height:${szBox}; border:1.5px solid #111; border-radius:4px; margin:0 auto; background:#fff; color:#111; font-weight:900; font-size:${fuenteGrande?'16px':'12px'}; line-height:${szBox}; text-align:center;">✓</div>
+                            </td>`;
+                        }
+                        if (pagadoDoc) {
+                            return `<td style="background:#000; border-bottom:1px solid #e5e7eb; padding:${paddingTd};"></td>`;
+                        }
+                        return `<td style="text-align:center; border-bottom:1px solid #e5e7eb; padding:${paddingTd};">
+                            <div style="width:${szBox}; height:${szBox}; border:1.5px solid #9ca3af; border-radius:4px; margin:0 auto; background:#fff;"></div>
+                        </td>`;
+                    }).join('');
 
                     return `
                     <tr style="background:${bgRow};">
@@ -1850,6 +1934,7 @@ async function _generarListaPDFEjecutar() {
     const html = `<!DOCTYPE html><html><head><meta charset="UTF-8">
     <style>
         @page { size: A4 portrait; margin: 15mm 12mm; }
+        * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
         body { font-family: 'Arial', sans-serif; font-size: ${szBody}; color: #1f2937; margin:0; }
         table { width: 100%; border-collapse: collapse; margin-top: 10px; }
         thead tr { background: #1e40af; color: white; }
@@ -1875,6 +1960,8 @@ async function _generarListaPDFEjecutar() {
     <div style="text-align:right; margin-top:0px; padding:10px; background:#eff6ff; border-bottom:2px solid #1e40af; font-size:${szBody}; font-weight:900; color:#1e3a8a;">
         TOTAL EN RANGO: $${Math.round(totalGeneral).toLocaleString('es-AR')} (${docs.length} Documentos)
     </div>
+
+    ${formatoReporte==='control' && colPagado ? `<div style="font-size:${szMeta}; color:#6b7280; margin-top:8px;">✓ = pagado &nbsp;·&nbsp; celda negra = no corresponde (documento ya pagado)</div>` : ''}
 
     <div style="margin-top:30px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:12px;">
         ${['Revisado por','Aprobado por','Fecha de revisión'].map(l => 
